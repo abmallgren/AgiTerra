@@ -173,7 +173,10 @@ if (-not (Test-Path $vsTargetExe)) {
 if (-not (Test-Path "$ProgramDir\PostgreSQL\bin\psql.exe")) {
     Write-Host "`n--- Installing PostgreSQL ---" -ForegroundColor Cyan
     $pgInstaller = "$InstallersDir\postgresql-installer.exe"
-    Download-File "https://get.enterprisedb.com/postgresql/postgresql-16.4-1-windows-x64.exe" $pgInstaller
+    
+    # Updated to PostgreSQL 18.7
+    Download-File "https://get.enterprisedb.com/postgresql/postgresql-18.7-1-windows-x64.exe" $pgInstaller
+    
     Start-Process -FilePath $pgInstaller -ArgumentList "--mode unattended --prefix $ProgramDir\PostgreSQL --datadir $ProgramDir\PostgreSQL\data --superpassword 'AdminPassword123!' --serverport 5432 --unattendedmodeui none" -Wait
 } else {
     Write-Host "[SKIPPED] PostgreSQL already installed." -ForegroundColor DarkGreen
@@ -277,7 +280,13 @@ $nginxXml = @"
   <id>nginx</id>
   <name>NGINX Web Server</name>
   <description>NGINX HTTP Server managed via WinSW</description>
-  <executable>$ProgramDir\NGINX\nginx.exe</executable>
+  <executable>D:\Program\NGINX\nginx.exe</executable>
+  <arguments>-p D:\Program\NGINX</arguments>
+  <workingdirectory>D:\Program\NGINX</workingdirectory>
+  <stopexecutable>D:\Program\NGINX\nginx.exe</stopexecutable>
+  <stoparguments>-p D:\Program\NGINX -s quit</stoparguments>
+  <startmode>Automatic</startmode>
+  <logpath>D:\Program\NGINX\logs\winsw</logpath>
   <log mode="roll-by-size">
     <sizeThreshold>10240</sizeThreshold>
     <keepFiles>8</keepFiles>
@@ -310,8 +319,13 @@ $phpCgiXml = @"
   <id>php-cgi</id>
   <name>PHP FastCGI Service</name>
   <description>PHP FastCGI Binary Wrapper on Port 9000</description>
-  <executable>$ProgramDir\PHP\php-cgi.exe</executable>
+  <executable>D:\Program\PHP\php-cgi.exe</executable>
   <arguments>-b 127.0.0.1:9000</arguments>
+  <workingdirectory>D:\Program\PHP</workingdirectory>
+  <env name="PHPRC" value="D:\Program\PHP"/>
+  <env name="PHP_FCGI_MAX_REQUESTS" value="500"/>
+  <startmode>Automatic</startmode>
+  <logpath>D:\Program\PHP\logs</logpath>
   <log mode="roll-by-size">
     <sizeThreshold>10240</sizeThreshold>
     <keepFiles>8</keepFiles>
@@ -324,6 +338,34 @@ if (-not (Get-Service -Name "php-cgi" -ErrorAction SilentlyContinue)) {
     Start-Process "$ProgramDir\PHP\service.exe" -ArgumentList "install" -Wait
 }
 if ((Get-Service -Name "php-cgi").Status -ne 'Running') { Start-Service "php-cgi" }
+
+$phpIni = @"
+extension_dir="D:/Program/PHP/ext"
+extension=curl
+extension=openssl
+extension=pdo_pgsql
+extension=pgsql
+extension=zip
+
+"@
+$phpIni | Set-Content "$ProgramDir\PHP\php.ini"
+
+# Composer
+Write-Host "`n--- Composer" -ForegroundColor Cyan
+
+if (-not (Test-Path -Path "$ProgramDir\Composer" -PathType Container)) {
+    New-Item -ItemType Directory -Path "$ProgramDir\Composer"
+}
+php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+php composer-setup.php --install-dir="$ProgramDir\Composer" --filename=composer
+php -r "unlink('composer-setup.php');"
+
+Set-Content -Path "$ProgramDir\Composer\composer.bat" -Value '@php "%~dp0composer" %*'
+
+$currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($currentPath -notlike "*$ProgramDir\Composer*") {
+    [Environment]::SetEnvironmentVariable("Path", "$currentPath;$ProgramDir\Composer", "User")
+}
 
 # Win-ACME
 if (-not (Test-Path "$ProgramDir\WinACME\wacs.exe")) {
@@ -366,18 +408,6 @@ foreach ($p in $targetPaths) {
     }
 }
 [Environment]::SetEnvironmentVariable("Path", $envPath, "Machine")
-
-
-# -----------------------------------------------------------------------------
-# 5. Idempotent Windows Firewall Configuration
-# -----------------------------------------------------------------------------
-Write-Host "`n--- Ensuring Windows Firewall Rules Exist ---" -ForegroundColor Cyan
-$rules = @(
-    @{ Name = "PostgreSQL"; Port = 5432 },
-    @{ Name = "MongoDB Instances"; Port = "27017,27018,27019" },
-    @{ Name = "NGINX Web Server"; Port = "80,443" },
-    @{ Name = "PHP FastCGI"; Port = 9000 }
-)
 
 foreach ($r in $rules) {
     if (-not (Get-NetFirewallRule -DisplayName $r.Name -ErrorAction SilentlyContinue)) {
